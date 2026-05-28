@@ -81,7 +81,7 @@ find_repoagent_venv() {
   fi
 
   local found
-  found="$(find "$repoagent_dir" -maxdepth 3 -type f -path "*/bin/activate" 2>/dev/null | head -n 1 || true)"
+  found="$(find "$repoagent_dir" -maxdepth 4 -type f -path "*/bin/activate" 2>/dev/null | head -n 1 || true)"
 
   if [ -n "$found" ]; then
     printf "%s" "$found"
@@ -92,13 +92,16 @@ find_repoagent_venv() {
 }
 
 open_client_shell_with_venv() {
-  local client_dir="$1"
-  local venv_activate="$2"
+  local workspace_root="$1"
+  local client_dir="$2"
+  local venv_activate="$3"
 
   local rc_file
   rc_file="$(mktemp /tmp/repoagent-shell-XXXXXX)"
 
   cat > "$rc_file" <<EOF
+cd "$workspace_root"
+
 if [ -f "$venv_activate" ]; then
   source "$venv_activate"
 fi
@@ -121,7 +124,7 @@ echo
 EOF
 
   echo
-  echo "Opening a new shell inside the client repo with the same venv active..."
+  echo "Opening shell from workspace root, activating venv, then entering client repo..."
   exec bash --rcfile "$rc_file" -i
 }
 
@@ -183,7 +186,7 @@ main() {
   fi
 
   echo
-  echo "Activating venv:"
+  echo "Activating RepoAgent venv inside RepoAgent:"
   echo "$VENV_ACTIVATE"
 
   # shellcheck disable=SC1090
@@ -198,10 +201,15 @@ main() {
   cd "$WORKSPACE_ROOT"
 
   echo
-  echo "Going into client repo..."
+  echo "Activating same venv again before entering client repo..."
+  # shellcheck disable=SC1090
+  source "$VENV_ACTIVATE"
+
+  echo
+  echo "Now entering client repo..."
   cd "$CLIENT_REPO_DIR"
 
-  open_client_shell_with_venv "$CLIENT_REPO_DIR" "$VENV_ACTIVATE"
+  open_client_shell_with_venv "$WORKSPACE_ROOT" "$CLIENT_REPO_DIR" "$VENV_ACTIVATE"
 }
 
 main "$@"
