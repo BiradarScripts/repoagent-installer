@@ -3,6 +3,7 @@ set -e
 
 BASE_REPO_URL="https://github.corp.ebay.com/madhapatil/RepoAgent.git"
 WORKSPACE_DIR="$HOME/repoagent-workspace"
+CORP_PYPI_URL="https://artifactory.corp.ebay.com/artifactory/api/pypi/pypi-coreai/simple"
 
 abort() {
   echo "ERROR: $*" >&2
@@ -67,23 +68,34 @@ clone_or_update_repo() {
   fi
 }
 
-find_repoagent_venv() {
-  local repoagent_dir="$1"
+open_final_shell() {
+  local client_dir="$1"
+  local workspace_venv_activate="$2"
 
-  if [ -f "$repoagent_dir/.venv/bin/activate" ]; then
-    printf "%s" "$repoagent_dir/.venv/bin/activate"
-    return 0
+  echo
+  echo "Opening final shell in client repo with workspace venv active..."
+
+  if command -v zsh >/dev/null 2>&1; then
+    local zsh_dir
+    zsh_dir="$(mktemp -d /tmp/repoagent-zsh-XXXXXX)"
+
+    cat > "$zsh_dir/.zshrc" <<EOF
+source "$workspace_venv_activate"
+cd "$client_dir"
+EOF
+
+    exec env ZDOTDIR="$zsh_dir" zsh -i
+  else
+    local bash_rc
+    bash_rc="$(mktemp /tmp/repoagent-bash-XXXXXX)"
+
+    cat > "$bash_rc" <<EOF
+source "$workspace_venv_activate"
+cd "$client_dir"
+EOF
+
+    exec bash --rcfile "$bash_rc" -i
   fi
-
-  local found
-  found="$(find "$repoagent_dir" -maxdepth 5 -type f -path "*/bin/activate" 2>/dev/null | head -n 1 || true)"
-
-  if [ -n "$found" ]; then
-    printf "%s" "$found"
-    return 0
-  fi
-
-  return 1
 }
 
 main() {
@@ -122,11 +134,36 @@ main() {
   cd "$WORKSPACE_DIR"
 
   WORKSPACE_ROOT="$(pwd)"
+  WORKSPACE_VENV_DIR="$WORKSPACE_ROOT/.venv"
+  WORKSPACE_VENV_ACTIVATE="$WORKSPACE_VENV_DIR/bin/activate"
   BASE_REPO_DIR="$WORKSPACE_ROOT/$BASE_REPO_NAME"
   CLIENT_REPO_DIR="$WORKSPACE_ROOT/$CLIENT_REPO_NAME"
 
   clone_or_update_repo "$BASE_REPO_URL" "$BASE_REPO_NAME"
   clone_or_update_repo "$CLIENT_REPO_URL" "$CLIENT_REPO_NAME"
+
+  echo
+  echo "Creating workspace-level virtual environment..."
+
+  if [ ! -d "$WORKSPACE_VENV_DIR" ]; then
+    run python3 -m venv "$WORKSPACE_VENV_DIR"
+  else
+    echo "Workspace venv already exists. Reusing:"
+    echo "$WORKSPACE_VENV_DIR"
+  fi
+
+  echo
+  echo "Activating workspace venv..."
+  # shellcheck disable=SC1090
+  source "$WORKSPACE_VENV_ACTIVATE"
+
+  echo
+  echo "Active venv:"
+  echo "$VIRTUAL_ENV"
+
+  echo
+  echo "Upgrading workspace venv tooling..."
+  run python -m pip install --upgrade pip setuptools wheel
 
   echo
   echo "Entering RepoAgent..."
@@ -137,16 +174,13 @@ main() {
   run make setup
 
   echo
-  echo "Finding RepoAgent virtual environment..."
-
-  if ! VENV_ACTIVATE="$(find_repoagent_venv "$BASE_REPO_DIR")"; then
-    abort "Could not find RepoAgent virtual environment after make setup"
-  fi
+  echo "Re-activating workspace venv after make setup..."
+  # shellcheck disable=SC1090
+  source "$WORKSPACE_VENV_ACTIVATE"
 
   echo
-  echo "Activating RepoAgent virtual environment..."
-  # shellcheck disable=SC1090
-  source "$VENV_ACTIVATE"
+  echo "Ensuring repo-warden is installed in workspace venv..."
+  run python -m pip install -e . --extra-index-url "$CORP_PYPI_URL"
 
   echo
   echo "Checking repo-warden..."
@@ -165,13 +199,13 @@ main() {
   echo "Current directory:"
   pwd
   echo
-  echo "Virtualenv:"
+  echo "Active venv:"
   echo "$VIRTUAL_ENV"
   echo
   echo "repo-warden:"
   command -v repo-warden
 
-  exec "${SHELL:-/bin/zsh}" -i
+  open_final_shell "$CLIENT_REPO_DIR" "$WORKSPACE_VENV_ACTIVATE"
 }
 
 main "$@"
