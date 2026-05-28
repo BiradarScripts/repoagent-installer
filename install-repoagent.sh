@@ -75,11 +75,6 @@ find_repoagent_venv() {
     return 0
   fi
 
-  if [ -f "$WORKSPACE_DIR/.venv/bin/activate" ]; then
-    printf "%s" "$WORKSPACE_DIR/.venv/bin/activate"
-    return 0
-  fi
-
   local found
   found="$(find "$repoagent_dir" -maxdepth 5 -type f -path "*/bin/activate" 2>/dev/null | head -n 1 || true)"
 
@@ -89,77 +84,6 @@ find_repoagent_venv() {
   fi
 
   return 1
-}
-
-open_final_shell() {
-  local workspace_root="$1"
-  local client_dir="$2"
-  local venv_activate="$3"
-
-  local venv_dir
-  local venv_name
-
-  venv_dir="$(dirname "$(dirname "$venv_activate")")"
-  venv_name="$(basename "$venv_dir")"
-
-  echo
-  echo "Preparing final terminal..."
-  echo "Venv: $venv_dir"
-  echo "Client repo: $client_dir"
-
-  if [ -n "${SHELL:-}" ] && [ "$(basename "$SHELL")" = "zsh" ] && command -v zsh >/dev/null 2>&1; then
-    local zsh_dir
-    zsh_dir="$(mktemp -d /tmp/repoagent-zsh-XXXXXX)"
-
-    cat > "$zsh_dir/.zshrc" <<EOF
-source "$venv_activate"
-cd "$client_dir"
-
-PROMPT="($venv_name) %1~ % "
-
-echo
-echo "Ready."
-echo "You are inside:"
-pwd
-echo
-echo "Virtualenv:"
-echo "\$VIRTUAL_ENV"
-echo
-echo "repo-warden:"
-command -v repo-warden || true
-echo
-EOF
-
-    echo
-    echo "Opening zsh with venv active inside client repo..."
-    exec env ZDOTDIR="$zsh_dir" zsh -i
-  else
-    local bash_rc
-    bash_rc="$(mktemp /tmp/repoagent-bash-XXXXXX)"
-
-    cat > "$bash_rc" <<EOF
-source "$venv_activate"
-cd "$client_dir"
-
-export PS1="($venv_name) \\W % "
-
-echo
-echo "Ready."
-echo "You are inside:"
-pwd
-echo
-echo "Virtualenv:"
-echo "\$VIRTUAL_ENV"
-echo
-echo "repo-warden:"
-command -v repo-warden || true
-echo
-EOF
-
-    echo
-    echo "Opening bash with venv active inside client repo..."
-    exec bash --rcfile "$bash_rc" -i
-  fi
 }
 
 main() {
@@ -209,20 +133,18 @@ main() {
   cd "$BASE_REPO_DIR"
 
   echo
-  echo "Running make setup..."
+  echo "Running make setup in RepoAgent..."
   run make setup
 
   echo
   echo "Finding RepoAgent virtual environment..."
 
   if ! VENV_ACTIVATE="$(find_repoagent_venv "$BASE_REPO_DIR")"; then
-    abort "Could not find virtual environment after make setup"
+    abort "Could not find RepoAgent virtual environment after make setup"
   fi
 
   echo
-  echo "Activating venv inside RepoAgent:"
-  echo "$VENV_ACTIVATE"
-
+  echo "Activating RepoAgent virtual environment..."
   # shellcheck disable=SC1090
   source "$VENV_ACTIVATE"
 
@@ -231,19 +153,25 @@ main() {
   run repo-warden --help
 
   echo
-  echo "Going back to root directory..."
+  echo "Going back to workspace root..."
   cd "$WORKSPACE_ROOT"
-
-  echo
-  echo "Activating venv before entering client repo..."
-  # shellcheck disable=SC1090
-  source "$VENV_ACTIVATE"
 
   echo
   echo "Entering client repo..."
   cd "$CLIENT_REPO_DIR"
 
-  open_final_shell "$WORKSPACE_ROOT" "$CLIENT_REPO_DIR" "$VENV_ACTIVATE"
+  echo
+  echo "Ready."
+  echo "Current directory:"
+  pwd
+  echo
+  echo "Virtualenv:"
+  echo "$VIRTUAL_ENV"
+  echo
+  echo "repo-warden:"
+  command -v repo-warden
+
+  exec "${SHELL:-/bin/zsh}" -i
 }
 
 main "$@"
