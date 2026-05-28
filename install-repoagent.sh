@@ -36,10 +36,7 @@ read_from_terminal() {
 
 normalize_repo_url() {
   local url="${1%/}"
-
-  # If someone pastes a GitHub browser URL like /tree/main, remove that part
   url="${url%%/tree/*}"
-
   printf "%s" "$url"
 }
 
@@ -70,31 +67,69 @@ clone_or_update_repo() {
   fi
 }
 
-activate_repoagent_venv_if_found() {
+find_repoagent_venv() {
   local repoagent_dir="$1"
 
   if [ -f "$repoagent_dir/.venv/bin/activate" ]; then
-    echo
-    echo "Activating RepoAgent virtual environment..."
-    # shellcheck disable=SC1090
-    source "$repoagent_dir/.venv/bin/activate"
-    echo "Active venv: $VIRTUAL_ENV"
-  elif [ -f "$WORKSPACE_DIR/.venv/bin/activate" ]; then
-    echo
-    echo "Activating workspace virtual environment..."
-    # shellcheck disable=SC1090
-    source "$WORKSPACE_DIR/.venv/bin/activate"
-    echo "Active venv: $VIRTUAL_ENV"
-  else
-    echo
-    echo "No .venv found after make setup. Continuing with current shell environment."
+    printf "%s" "$repoagent_dir/.venv/bin/activate"
+    return 0
   fi
+
+  if [ -f "$WORKSPACE_DIR/.venv/bin/activate" ]; then
+    printf "%s" "$WORKSPACE_DIR/.venv/bin/activate"
+    return 0
+  fi
+
+  local found
+  found="$(find "$repoagent_dir" -maxdepth 3 -type f -path "*/bin/activate" 2>/dev/null | head -n 1 || true)"
+
+  if [ -n "$found" ]; then
+    printf "%s" "$found"
+    return 0
+  fi
+
+  return 1
+}
+
+open_client_shell_with_venv() {
+  local client_dir="$1"
+  local venv_activate="$2"
+
+  local rc_file
+  rc_file="$(mktemp /tmp/repoagent-shell-XXXXXX)"
+
+  cat > "$rc_file" <<EOF
+if [ -f "$venv_activate" ]; then
+  source "$venv_activate"
+fi
+
+cd "$client_dir"
+
+echo
+echo "You are now inside the client repo:"
+pwd
+echo
+echo "Using RepoAgent virtual environment:"
+echo "\$VIRTUAL_ENV"
+echo
+echo "Python:"
+which python
+echo
+echo "repo-warden:"
+command -v repo-warden || true
+echo
+EOF
+
+  echo
+  echo "Opening a new shell inside the client repo with the same venv active..."
+  exec bash --rcfile "$rc_file" -i
 }
 
 main() {
   need_command git
   need_command python3
   need_command make
+  need_command bash
 
   echo
   echo "Checking access to RepoAgent..."
@@ -103,7 +138,7 @@ main() {
     echo "Could not access:"
     echo "$BASE_REPO_URL"
     echo
-    echo "Make sure you are on eBay network/VPN and have GitHub Enterprise access."
+    echo "Make sure you are on eBay VPN/network and have GitHub Enterprise access."
     abort "RepoAgent access check failed"
   fi
 
@@ -126,19 +161,33 @@ main() {
   cd "$WORKSPACE_DIR"
 
   WORKSPACE_ROOT="$(pwd)"
+  BASE_REPO_DIR="$WORKSPACE_ROOT/$BASE_REPO_NAME"
+  CLIENT_REPO_DIR="$WORKSPACE_ROOT/$CLIENT_REPO_NAME"
 
   clone_or_update_repo "$BASE_REPO_URL" "$BASE_REPO_NAME"
   clone_or_update_repo "$CLIENT_REPO_URL" "$CLIENT_REPO_NAME"
 
   echo
   echo "Entering RepoAgent..."
-  cd "$WORKSPACE_ROOT/$BASE_REPO_NAME"
+  cd "$BASE_REPO_DIR"
 
   echo
-  echo "Running RepoAgent setup..."
+  echo "Running make setup in RepoAgent..."
   run make setup
 
-  activate_repoagent_venv_if_found "$WORKSPACE_ROOT/$BASE_REPO_NAME"
+  echo
+  echo "Finding RepoAgent virtual environment..."
+
+  if ! VENV_ACTIVATE="$(find_repoagent_venv "$BASE_REPO_DIR")"; then
+    abort "Could not find virtual environment after make setup"
+  fi
+
+  echo
+  echo "Activating venv:"
+  echo "$VENV_ACTIVATE"
+
+  # shellcheck disable=SC1090
+  source "$VENV_ACTIVATE"
 
   echo
   echo "Checking repo-warden..."
@@ -149,23 +198,10 @@ main() {
   cd "$WORKSPACE_ROOT"
 
   echo
-  echo "Entering client repo..."
-  cd "$WORKSPACE_ROOT/$CLIENT_REPO_NAME"
+  echo "Going into client repo..."
+  cd "$CLIENT_REPO_DIR"
 
-  echo
-  echo "Done."
-  echo "You are now inside the client repo:"
-  pwd
-
-  if [ -n "${VIRTUAL_ENV:-}" ]; then
-    echo
-    echo "Virtual environment is active:"
-    echo "$VIRTUAL_ENV"
-  fi
-
-  echo
-  echo "Opening shell here..."
-  exec "${SHELL:-/bin/bash}"
+  open_client_shell_with_venv "$CLIENT_REPO_DIR" "$VENV_ACTIVATE"
 }
 
 main "$@"
