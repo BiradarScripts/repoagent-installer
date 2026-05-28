@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+set -e
 
 BASE_REPO_URL="https://github.corp.ebay.com/madhapatil/RepoAgent.git"
 WORKSPACE_DIR="$HOME/repoagent-workspace"
 
 abort() {
   echo "ERROR: $*" >&2
-  return 1 2>/dev/null || exit 1
+  exit 1
 }
 
 run() {
@@ -16,13 +17,6 @@ run() {
 
 need_command() {
   command -v "$1" >/dev/null 2>&1 || abort "$1 is not installed"
-}
-
-repo_name_from_url() {
-  local url="${1%/}"
-  local name="${url##*/}"
-  name="${name%.git}"
-  printf "%s" "$name"
 }
 
 read_from_terminal() {
@@ -38,6 +32,25 @@ read_from_terminal() {
   fi
 
   printf "%s" "$value"
+}
+
+normalize_repo_url() {
+  local url="${1%/}"
+
+  # If someone pastes a GitHub browser URL like /tree/main, remove that part
+  url="${url%%/tree/*}"
+
+  printf "%s" "$url"
+}
+
+repo_name_from_url() {
+  local url
+  url="$(normalize_repo_url "$1")"
+
+  local name="${url##*/}"
+  name="${name%.git}"
+
+  printf "%s" "$name"
 }
 
 clone_or_update_repo() {
@@ -57,11 +70,45 @@ clone_or_update_repo() {
   fi
 }
 
+activate_repoagent_venv_if_found() {
+  local repoagent_dir="$1"
+
+  if [ -f "$repoagent_dir/.venv/bin/activate" ]; then
+    echo
+    echo "Activating RepoAgent virtual environment..."
+    # shellcheck disable=SC1090
+    source "$repoagent_dir/.venv/bin/activate"
+    echo "Active venv: $VIRTUAL_ENV"
+  elif [ -f "$WORKSPACE_DIR/.venv/bin/activate" ]; then
+    echo
+    echo "Activating workspace virtual environment..."
+    # shellcheck disable=SC1090
+    source "$WORKSPACE_DIR/.venv/bin/activate"
+    echo "Active venv: $VIRTUAL_ENV"
+  else
+    echo
+    echo "No .venv found after make setup. Continuing with current shell environment."
+  fi
+}
+
 main() {
   need_command git
   need_command python3
+  need_command make
+
+  echo
+  echo "Checking access to RepoAgent..."
+  if ! git ls-remote "$BASE_REPO_URL" >/dev/null 2>&1; then
+    echo
+    echo "Could not access:"
+    echo "$BASE_REPO_URL"
+    echo
+    echo "Make sure you are on eBay network/VPN and have GitHub Enterprise access."
+    abort "RepoAgent access check failed"
+  fi
 
   CLIENT_REPO_URL="$(read_from_terminal 'Paste the client repo GitHub URL:')"
+  CLIENT_REPO_URL="$(normalize_repo_url "$CLIENT_REPO_URL")"
 
   if [ -z "$CLIENT_REPO_URL" ]; then
     abort "Client repo URL cannot be empty"
@@ -75,8 +122,8 @@ main() {
   echo "Base repo:   $BASE_REPO_NAME"
   echo "Client repo: $CLIENT_REPO_NAME"
 
-  mkdir -p "$WORKSPACE_DIR" || abort "Could not create workspace directory"
-  cd "$WORKSPACE_DIR" || abort "Could not enter workspace directory"
+  mkdir -p "$WORKSPACE_DIR"
+  cd "$WORKSPACE_DIR"
 
   WORKSPACE_ROOT="$(pwd)"
 
@@ -84,62 +131,41 @@ main() {
   clone_or_update_repo "$CLIENT_REPO_URL" "$CLIENT_REPO_NAME"
 
   echo
-  echo "Setting up virtual environment..."
-
-  if [ ! -d ".venv" ]; then
-    run python3 -m venv .venv
-  else
-    echo ".venv already exists. Reusing it."
-  fi
-
-  # shellcheck disable=SC1091
-  source "$WORKSPACE_ROOT/.venv/bin/activate" || abort "Could not activate virtual environment"
+  echo "Entering RepoAgent..."
+  cd "$WORKSPACE_ROOT/$BASE_REPO_NAME"
 
   echo
-  echo "Virtual environment activated:"
-  echo "$VIRTUAL_ENV"
+  echo "Running RepoAgent setup..."
+  run make setup
+
+  activate_repoagent_venv_if_found "$WORKSPACE_ROOT/$BASE_REPO_NAME"
 
   echo
-  echo "Installing RepoAgent base repository..."
-
-  cd "$WORKSPACE_ROOT/$BASE_REPO_NAME" || abort "Could not enter base repo"
-
-  run python -m pip install --upgrade pip setuptools wheel
-  run python -m pip install -e .
+  echo "Checking repo-warden..."
   run repo-warden --help
 
   echo
-  echo "Moving to client repo..."
+  echo "Going back to workspace root..."
+  cd "$WORKSPACE_ROOT"
 
-  cd "$WORKSPACE_ROOT/$CLIENT_REPO_NAME" || abort "Could not enter client repo"
+  echo
+  echo "Entering client repo..."
+  cd "$WORKSPACE_ROOT/$CLIENT_REPO_NAME"
 
   echo
   echo "Done."
-  echo "Current directory:"
+  echo "You are now inside the client repo:"
   pwd
+
+  if [ -n "${VIRTUAL_ENV:-}" ]; then
+    echo
+    echo "Virtual environment is active:"
+    echo "$VIRTUAL_ENV"
+  fi
+
   echo
-  echo "Python:"
-  which python
+  echo "Opening shell here..."
+  exec "${SHELL:-/bin/bash}"
 }
 
-IS_SOURCED=0
-if [ -n "$BASH_VERSION" ] && [ "${BASH_SOURCE[0]}" != "$0" ]; then
-  IS_SOURCED=1
-fi
-
 main "$@"
-STATUS=$?
-
-if [ "$STATUS" -ne 0 ]; then
-  if [ "$IS_SOURCED" -eq 1 ]; then
-    return "$STATUS"
-  else
-    exit "$STATUS"
-  fi
-fi
-
-if [ "$IS_SOURCED" -eq 0 ]; then
-  echo
-  echo "Opening a shell here so you stay inside the client repo with venv active..."
-  exec "${SHELL:-/bin/bash}"
-fi
