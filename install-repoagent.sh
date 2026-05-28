@@ -81,7 +81,7 @@ find_repoagent_venv() {
   fi
 
   local found
-  found="$(find "$repoagent_dir" -maxdepth 4 -type f -path "*/bin/activate" 2>/dev/null | head -n 1 || true)"
+  found="$(find "$repoagent_dir" -maxdepth 5 -type f -path "*/bin/activate" 2>/dev/null | head -n 1 || true)"
 
   if [ -n "$found" ]; then
     printf "%s" "$found"
@@ -91,51 +91,85 @@ find_repoagent_venv() {
   return 1
 }
 
-open_client_shell_with_venv() {
+open_final_shell() {
   local workspace_root="$1"
   local client_dir="$2"
   local venv_activate="$3"
 
-  local rc_file
-  rc_file="$(mktemp /tmp/repoagent-shell-XXXXXX)"
+  local venv_dir
+  local venv_name
 
-  cat > "$rc_file" <<EOF
-cd "$workspace_root"
+  venv_dir="$(dirname "$(dirname "$venv_activate")")"
+  venv_name="$(basename "$venv_dir")"
 
-if [ -f "$venv_activate" ]; then
-  source "$venv_activate"
-fi
+  echo
+  echo "Preparing final terminal..."
+  echo "Venv: $venv_dir"
+  echo "Client repo: $client_dir"
 
+  if [ -n "${SHELL:-}" ] && [ "$(basename "$SHELL")" = "zsh" ] && command -v zsh >/dev/null 2>&1; then
+    local zsh_dir
+    zsh_dir="$(mktemp -d /tmp/repoagent-zsh-XXXXXX)"
+
+    cat > "$zsh_dir/.zshrc" <<EOF
+source "$venv_activate"
 cd "$client_dir"
 
+PROMPT="($venv_name) %1~ % "
+
 echo
-echo "You are now inside the client repo:"
+echo "Ready."
+echo "You are inside:"
 pwd
 echo
-echo "Using RepoAgent virtual environment:"
+echo "Virtualenv:"
 echo "\$VIRTUAL_ENV"
-echo
-echo "Python:"
-which python
 echo
 echo "repo-warden:"
 command -v repo-warden || true
 echo
 EOF
 
-  echo
-  echo "Opening shell from workspace root, activating venv, then entering client repo..."
-  exec bash --rcfile "$rc_file" -i
+    echo
+    echo "Opening zsh with venv active inside client repo..."
+    exec env ZDOTDIR="$zsh_dir" zsh -i
+  else
+    local bash_rc
+    bash_rc="$(mktemp /tmp/repoagent-bash-XXXXXX)"
+
+    cat > "$bash_rc" <<EOF
+source "$venv_activate"
+cd "$client_dir"
+
+export PS1="($venv_name) \\W % "
+
+echo
+echo "Ready."
+echo "You are inside:"
+pwd
+echo
+echo "Virtualenv:"
+echo "\$VIRTUAL_ENV"
+echo
+echo "repo-warden:"
+command -v repo-warden || true
+echo
+EOF
+
+    echo
+    echo "Opening bash with venv active inside client repo..."
+    exec bash --rcfile "$bash_rc" -i
+  fi
 }
 
 main() {
   need_command git
   need_command python3
   need_command make
-  need_command bash
 
   echo
   echo "Checking access to RepoAgent..."
+
   if ! git ls-remote "$BASE_REPO_URL" >/dev/null 2>&1; then
     echo
     echo "Could not access:"
@@ -175,7 +209,7 @@ main() {
   cd "$BASE_REPO_DIR"
 
   echo
-  echo "Running make setup in RepoAgent..."
+  echo "Running make setup..."
   run make setup
 
   echo
@@ -186,7 +220,7 @@ main() {
   fi
 
   echo
-  echo "Activating RepoAgent venv inside RepoAgent:"
+  echo "Activating venv inside RepoAgent:"
   echo "$VENV_ACTIVATE"
 
   # shellcheck disable=SC1090
@@ -197,19 +231,19 @@ main() {
   run repo-warden --help
 
   echo
-  echo "Going back to workspace root..."
+  echo "Going back to root directory..."
   cd "$WORKSPACE_ROOT"
 
   echo
-  echo "Activating same venv again before entering client repo..."
+  echo "Activating venv before entering client repo..."
   # shellcheck disable=SC1090
   source "$VENV_ACTIVATE"
 
   echo
-  echo "Now entering client repo..."
+  echo "Entering client repo..."
   cd "$CLIENT_REPO_DIR"
 
-  open_client_shell_with_venv "$WORKSPACE_ROOT" "$CLIENT_REPO_DIR" "$VENV_ACTIVATE"
+  open_final_shell "$WORKSPACE_ROOT" "$CLIENT_REPO_DIR" "$VENV_ACTIVATE"
 }
 
 main "$@"
